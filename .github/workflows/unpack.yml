@@ -10,11 +10,11 @@ permissions:
 jobs:
   extract:
     runs-on: ubuntu-latest
-            steps:
-        - name: Checkout repository
-          uses: actions/checkout@v4
-          with:
-            token: ${{ secrets.GH_PAT }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
 
       - name: Extract project ZIP
         run: |
