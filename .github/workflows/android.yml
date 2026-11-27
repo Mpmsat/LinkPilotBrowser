@@ -19,10 +19,13 @@ jobs:
           unzip -q Mili-Browser-GeckoView-foundation.zip -d /tmp/mili-source
           rsync -a --exclude='.github/' /tmp/mili-source/LinkPilotBrowser/ ./
 
-      - name: Prepare Android SDK 37
+      - name: Prepare Android SDK command-line tools
         uses: android-actions/setup-android@v3
-        with:
-          packages: 'platforms;android-37'
+
+      - name: Install Android SDK 37 preview
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager --channel=3 "platforms;android-37"
 
       - name: Update build versions for API 37
         run: |
