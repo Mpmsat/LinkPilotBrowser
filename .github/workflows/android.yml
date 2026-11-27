@@ -4,7 +4,8 @@ name: Build Mili Browser APK
 on:
   workflow_dispatch:
   push:
-    branches: ["main"]
+    branches:
+      - main
 
 jobs:
   build:
@@ -19,34 +20,30 @@ jobs:
           unzip -q Mili-Browser-GeckoView-foundation.zip -d /tmp/mili-source
           rsync -a --exclude='.github/' /tmp/mili-source/LinkPilotBrowser/ ./
 
-      - name: Prepare Android SDK command-line tools
-        uses: android-actions/setup-android@v3
-        with:
-          packages: 'platform-tools'
-
-      - name: Install Android SDK 37 preview
-        run: |
-          sdkmanager --channel=3 "platforms;android-37"
-
-      - name: Update build versions for API 37
-        run: |
-          sed -i 's/version "8.13.2"/version "9.1.1"/' build.gradle.kts
-          sed -i 's/compileSdk = 36/compileSdk = 37/' app/build.gradle.kts
-          printf '\nandroid.builtInKotlin=false\nandroid.newDsl=false\n' >> gradle.properties
-
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
+
+      - name: Prepare Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
+      - name: Install Android SDK 36
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "9.3.1"
+          gradle-version: '8.13'
 
       - name: Build Mili Browser
-        run: gradle --no-daemon :app:assembleDebug
+        run: |
+          gradle --no-daemon :app:assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
