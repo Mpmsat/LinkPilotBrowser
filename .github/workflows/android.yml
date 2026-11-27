@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   build:
-    name: Build Mili Browser APK
+    name: Build Mili Browser APK 0.4.2
     runs-on: ubuntu-24.04
 
     steps:
@@ -27,45 +27,27 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p /tmp/mili-source
-
-          ARCHIVE=$(find . -maxdepth 4 -type f \( \
-            -name "Mili-Browser-Source.zip" -o \
-            -name "Mili-Browser-Full-Build-Kit.zip" -o \
-            -name "Mili-Browser-GeckoView-foundation.zip" \
-          \) | head -n 1)
+          ARCHIVE="$(find . -maxdepth 4 -type f -name "MiliBrowser-Source-0.4.2-Telegram-Complete.zip" -print -quit)"
 
           if [ -z "$ARCHIVE" ]; then
-            echo "ERROR: Mili Browser source ZIP was not found."
+            echo "ERROR: Source ZIP not found."
+            find . -maxdepth 4 -type f -iname "*.zip" -print
             exit 1
           fi
 
-          echo "Using archive: $ARCHIVE"
+          mkdir -p /tmp/mili-source
           unzip -q "$ARCHIVE" -d /tmp/mili-source
 
-          INNER=$(find /tmp/mili-source -type f \
-            -name "Mili-Browser-Source.zip" | head -n 1 || true)
+          PROJECT_DIR="$(find /tmp/mili-source -type f -name "settings.gradle.kts" -print -quit | xargs -r dirname)"
 
-          if [ -n "$INNER" ]; then
-            mkdir -p /tmp/mili-inner
-            unzip -q "$INNER" -d /tmp/mili-inner
-            cp -a /tmp/mili-inner/. /tmp/mili-source/
-          fi
-
-          PROJECT_DIR=$(find /tmp/mili-source -type f \
-            \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
-            -printf '%h\n' | head -n 1)
-
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: Android Gradle project was not found."
-            find /tmp/mili-source -maxdepth 4 -type f | head -n 100
+          if [ -z "$PROJECT_DIR" ] || [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
+            echo "ERROR: Android project not found."
             exit 1
           fi
 
-          echo "Project directory: $PROJECT_DIR"
-          cp -a "$PROJECT_DIR"/. "$GITHUB_WORKSPACE"/
+          find "$PROJECT_DIR" -mindepth 1 -maxdepth 1 ! -name ".github" -exec cp -a {} "$GITHUB_WORKSPACE"/ \;
 
-      - name: Set up Java
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -73,94 +55,43 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          packages: |
-            platform-tools
 
-      - name: Install Android SDK components
-        shell: bash
+      - name: Install Android SDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Install Gradle 8.13
+        run: |
+          wget -q https://services.gradle.org/distributions/gradle-8.13-bin.zip -O /tmp/gradle.zip
+          unzip -q /tmp/gradle.zip -d /opt
+          echo "/opt/gradle-8.13/bin" >> "$GITHUB_PATH"
+
+      - name: Fix legacy Kotlin activity labels
         run: |
           set -euo pipefail
-
-          yes | sdkmanager --licenses || true
-
-          sdkmanager \
-            "platform-tools" \
-            "platforms;android-36" \
-            "build-tools;36.0.0"
-
-      - name: Set up Gradle
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ -f gradlew ]; then
-            chmod +x gradlew
-          else
-            wget -q \
-              https://services.gradle.org/distributions/gradle-8.13-bin.zip \
-              -O /tmp/gradle.zip
-
-            unzip -q /tmp/gradle.zip -d /opt
-            echo "/opt/gradle-8.13/bin" >> "$GITHUB_PATH"
-          fi
-
-      - name: Fix Kotlin activity labels
-        shell: bash
-        run: |
-          set -euo pipefail
-
           FILE="app/src/main/java/com/linkpilot/browser/LegacyMainActivity.kt"
-
-          if [ ! -f "$FILE" ]; then
-            echo "ERROR: $FILE was not found."
-            echo "Available Kotlin files:"
-            find app/src/main/java -name "*.kt" -type f
-            exit 1
+          if [ -f "$FILE" ]; then
+            sed -i 's/this@MainActivity/this@LegacyMainActivity/g' "$FILE"
           fi
-
-          sed -i \
-            's/this@MainActivity/this@LegacyMainActivity/g' \
-            "$FILE"
-
-          if grep -n 'this@MainActivity' "$FILE"; then
-            echo "ERROR: Incorrect activity labels remain."
-            exit 1
-          fi
-
-          echo "Kotlin activity labels checked."
 
       - name: Build debug APK
-        shell: bash
         run: |
           set -euo pipefail
-
-          if [ -f gradlew ]; then
-            ./gradlew --no-daemon --stacktrace :app:assembleDebug
-          else
-            gradle --no-daemon --stacktrace :app:assembleDebug
-          fi
+          gradle --no-daemon --stacktrace :app:assembleDebug
 
       - name: Verify APK
-        shell: bash
         run: |
           set -euo pipefail
-
-          APK=$(find app/build/outputs/apk/debug \
-            -type f -name "*.apk" | head -n 1 || true)
-
-          if [ -z "$APK" ]; then
-            echo "ERROR: APK file was not generated."
-            exit 1
-          fi
-
-          echo "APK generated successfully:"
+          APK="$(find app/build/outputs/apk/debug -type f -name "*.apk" -print -quit)"
+          test -n "$APK"
           ls -lh "$APK"
+          sha256sum "$APK"
 
-      - name: Upload Mili Browser APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Mili-Browser-debug-APK
+          name: Mili-Browser-0.4.2-debug-APK
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
