@@ -1,66 +1,72 @@
-name: Build Mili Browser APK
+
+name: Mili Browser Android Build
 
 on:
   workflow_dispatch:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
+    paths:
+      - "**.zip"
+      - ".github/workflows/android.yml"
 
 permissions:
   contents: read
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Build Mili Browser APK
+    runs-on: ubuntu-24.04
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Locate and verify source archive
+      - name: Locate and extract source archive
         shell: bash
         run: |
-          set -euo pipefail
+          set -e
 
-          if [[ -f "Mili-Browser-Source.zip" ]]; then
-            SOURCE_ZIP="Mili-Browser-Source.zip"
-          elif [[ -f "Mili-Browser-Full-Build-Kit.zip" ]]; then
-            echo "Extracting source archive from the uploaded build kit..."
-            unzip -p "Mili-Browser-Full-Build-Kit.zip" "Mili-Browser-Source.zip" > /tmp/Mili-Browser-Source.zip
-            SOURCE_ZIP="/tmp/Mili-Browser-Source.zip"
-          elif [[ -f "Mili-Browser-GeckoView-foundation.zip" ]]; then
-            echo "Using the original GeckoView foundation archive..."
-            SOURCE_ZIP="Mili-Browser-GeckoView-foundation.zip"
-          else
-            echo "ERROR: No recognized Mili source archive found in repository root."
-            echo "Expected one of: Mili-Browser-Source.zip, Mili-Browser-Full-Build-Kit.zip, Mili-Browser-GeckoView-foundation.zip"
-            ls -la
+          mkdir -p /tmp/mili-source
+
+          ARCHIVE=$(find . -maxdepth 3 -type f \( \
+            -name "Mili-Browser-Source.zip" -o \
+            -name "Mili-Browser-Full-Build-Kit.zip" -o \
+            -name "Mili-Browser-GeckoView-foundation.zip" \
+          \) | head -n 1)
+
+          if [ -z "$ARCHIVE" ]; then
+            echo "ERROR: Mili Browser source ZIP was not found."
             exit 1
           fi
 
-          echo "Using source archive: $SOURCE_ZIP"
-          unzip -t "$SOURCE_ZIP"
+          echo "Using archive: $ARCHIVE"
+          unzip -q "$ARCHIVE" -d /tmp/mili-source
 
-          mkdir -p /tmp/mili-source
-          unzip -q "$SOURCE_ZIP" -d /tmp/mili-source
+          # Extract an embedded source archive if one exists.
+          INNER=$(find /tmp/mili-source -type f \
+            -name "Mili-Browser-Source.zip" | head -n 1)
 
-          if [[ ! -f /tmp/mili-source/settings.gradle.kts ]]; then
-            PROJECT_SETTINGS="$(find /tmp/mili-source -mindepth 2 -maxdepth 4 -name settings.gradle.kts -print -quit)"
-            if [[ -n "$PROJECT_SETTINGS" ]]; then
-              PROJECT_ROOT="$(dirname "$PROJECT_SETTINGS")"
-            else
-              echo "ERROR: settings.gradle.kts was not found in the extracted archive."
-              find /tmp/mili-source -maxdepth 4 -type f | head -100
-              exit 1
-            fi
-          else
-            PROJECT_ROOT="/tmp/mili-source"
+          if [ -n "$INNER" ]; then
+            mkdir -p /tmp/mili-inner
+            unzip -q "$INNER" -d /tmp/mili-inner
+            cp -a /tmp/mili-inner/. /tmp/mili-source/
           fi
 
-          rsync -a --delete --exclude='.github/' "$PROJECT_ROOT"/ ./
-          test -f app/build.gradle.kts
-          test -f settings.gradle.kts
-          echo "Project source extracted successfully."
+          PROJECT_DIR=$(find /tmp/mili-source -type f \
+            \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+            -printf '%h\n' | head -n 1)
 
-      - name: Set up JDK 17
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: Android Gradle project was not found in ZIP."
+            find /tmp/mili-source -maxdepth 4 -type f | head -n 100
+            exit 1
+          fi
+
+          echo "Project directory: $PROJECT_DIR"
+          cp -a "$PROJECT_DIR"/. "$GITHUB_WORKSPACE"/
+
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -68,26 +74,76 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          packages: "platform-tools platforms;android-36 build-tools;36.0.0"
+
+      - name: Install Android SDK components
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0"
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.13"
+        shell: bash
+        run: |
+          if [ ! -f gradlew ]; then
+            wget -q https://services.gradle.org/distributions/gradle-8.13-bin.zip \
+              -O /tmp/gradle.zip
+            unzip -q /tmp/gradle.zip -d /opt
+            echo "/opt/gradle-8.13/bin" >> "$GITHUB_PATH"
+          else
+            chmod +x gradlew
+          fi
+
+      - name: Fix Kotlin activity labels
+        shell: bash
+        run: |
+          FILE="app/src/main/java/com/linkpilot/browser/LegacyMainActivity.kt"
+
+          if [ -f "$FILE" ]; then
+            sed -i \
+              's/this@MainActivity/this@LegacyMainActivity/g' \
+              "$FILE"
+          else
+            echo "ERROR: LegacyMainActivity.kt was not found."
+            exit 1
+          fi
+
+          if grep -n 'this@MainActivity' "$FILE"; then
+            echo "ERROR: Incorrect activity labels remain."
+            exit 1
+          fi
+
+          echo "Kotlin activity labels checked."
 
       - name: Build debug APK
-        run: gradle --no-daemon --stacktrace :app:assembleDebug
-
-      - name: Verify APK exists
+        shell: bash
         run: |
-          test -s app/build/outputs/apk/debug/app-debug.apk
-          ls -lh app/build/outputs/apk/debug/app-debug.apk
+          if [ -f gradlew ]; then
+            ./gradlew --no-daemon --stacktrace :app:assembleDebug
+          else
+            gradle --no-daemon --stacktrace :app:assembleDebug
+          fi
 
-      - name: Upload APK artifact
+      - name: Verify APK
+        shell: bash
+        run: |
+          APK=$(find app/build/outputs/apk/debug \
+            -type f -name "*.apk" | head -n 1)
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK file was not generated."
+            exit 1
+          fi
+
+          echo "APK generated successfully: $APK"
+          ls -lh "$APK"
+
+      - name: Upload Mili Browser APK
         uses: actions/upload-artifact@v4
         with:
-          name: Mili-Browser-GeckoView-arm64-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: Mili-Browser-debug-APK
+          path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
