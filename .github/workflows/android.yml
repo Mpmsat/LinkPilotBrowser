@@ -20,6 +20,10 @@ jobs:
           unzip -q Mili-Browser-GeckoView-foundation.zip -d /tmp/mili-source
           rsync -a --exclude='.github/' /tmp/mili-source/LinkPilotBrowser/ ./
 
+      - name: Fix legacy activity references
+        run: |
+          sed -i 's/this@MainActivity/this@LegacyMainActivity/g' app/src/main/java/com/linkpilot/browser/LegacyMainActivity.kt
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
