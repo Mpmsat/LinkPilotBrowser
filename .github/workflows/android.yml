@@ -25,11 +25,11 @@ jobs:
       - name: Locate and extract source archive
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           mkdir -p /tmp/mili-source
 
-          ARCHIVE=$(find . -maxdepth 3 -type f \( \
+          ARCHIVE=$(find . -maxdepth 4 -type f \( \
             -name "Mili-Browser-Source.zip" -o \
             -name "Mili-Browser-Full-Build-Kit.zip" -o \
             -name "Mili-Browser-GeckoView-foundation.zip" \
@@ -43,9 +43,8 @@ jobs:
           echo "Using archive: $ARCHIVE"
           unzip -q "$ARCHIVE" -d /tmp/mili-source
 
-          # Extract an embedded source archive if one exists.
           INNER=$(find /tmp/mili-source -type f \
-            -name "Mili-Browser-Source.zip" | head -n 1)
+            -name "Mili-Browser-Source.zip" | head -n 1 || true)
 
           if [ -n "$INNER" ]; then
             mkdir -p /tmp/mili-inner
@@ -58,7 +57,7 @@ jobs:
             -printf '%h\n' | head -n 1)
 
           if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: Android Gradle project was not found in ZIP."
+            echo "ERROR: Android Gradle project was not found."
             find /tmp/mili-source -maxdepth 4 -type f | head -n 100
             exit 1
           fi
@@ -74,11 +73,17 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: |
+            platform-tools
 
       - name: Install Android SDK components
         shell: bash
         run: |
+          set -euo pipefail
+
           yes | sdkmanager --licenses || true
+
           sdkmanager \
             "platform-tools" \
             "platforms;android-36" \
@@ -87,28 +92,36 @@ jobs:
       - name: Set up Gradle
         shell: bash
         run: |
-          if [ ! -f gradlew ]; then
-            wget -q https://services.gradle.org/distributions/gradle-8.13-bin.zip \
+          set -euo pipefail
+
+          if [ -f gradlew ]; then
+            chmod +x gradlew
+          else
+            wget -q \
+              https://services.gradle.org/distributions/gradle-8.13-bin.zip \
               -O /tmp/gradle.zip
+
             unzip -q /tmp/gradle.zip -d /opt
             echo "/opt/gradle-8.13/bin" >> "$GITHUB_PATH"
-          else
-            chmod +x gradlew
           fi
 
       - name: Fix Kotlin activity labels
         shell: bash
         run: |
+          set -euo pipefail
+
           FILE="app/src/main/java/com/linkpilot/browser/LegacyMainActivity.kt"
 
-          if [ -f "$FILE" ]; then
-            sed -i \
-              's/this@MainActivity/this@LegacyMainActivity/g' \
-              "$FILE"
-          else
-            echo "ERROR: LegacyMainActivity.kt was not found."
+          if [ ! -f "$FILE" ]; then
+            echo "ERROR: $FILE was not found."
+            echo "Available Kotlin files:"
+            find app/src/main/java -name "*.kt" -type f
             exit 1
           fi
+
+          sed -i \
+            's/this@MainActivity/this@LegacyMainActivity/g' \
+            "$FILE"
 
           if grep -n 'this@MainActivity' "$FILE"; then
             echo "ERROR: Incorrect activity labels remain."
@@ -120,6 +133,8 @@ jobs:
       - name: Build debug APK
         shell: bash
         run: |
+          set -euo pipefail
+
           if [ -f gradlew ]; then
             ./gradlew --no-daemon --stacktrace :app:assembleDebug
           else
@@ -129,15 +144,17 @@ jobs:
       - name: Verify APK
         shell: bash
         run: |
+          set -euo pipefail
+
           APK=$(find app/build/outputs/apk/debug \
-            -type f -name "*.apk" | head -n 1)
+            -type f -name "*.apk" | head -n 1 || true)
 
           if [ -z "$APK" ]; then
             echo "ERROR: APK file was not generated."
             exit 1
           fi
 
-          echo "APK generated successfully: $APK"
+          echo "APK generated successfully:"
           ls -lh "$APK"
 
       - name: Upload Mili Browser APK
