@@ -63,7 +63,7 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: ""
+          packages: platform-tools
 
       - name: Install Android SDK components
         shell: bash
@@ -102,6 +102,39 @@ jobs:
           if [ -f "$FILE" ]; then
             sed -i 's/this@MainActivity/this@LegacyMainActivity/g' "$FILE"
           fi
+
+      - name: Fix Kotlin compiler options
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILE="app/build.gradle.kts"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("app/build.gradle.kts")
+          content = path.read_text()
+
+          old = 'kotlinOptions { jvmTarget = "17" }'
+          new = '''kotlin {
+              compilerOptions {
+                  jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+              }
+          }'''
+
+          count = content.count(old)
+
+          if count != 1:
+              raise SystemExit(
+                  f"Expected exactly one old Kotlin jvmTarget setting, found {count}"
+              )
+
+          content = content.replace(old, new, 1)
+          path.write_text(content)
+
+          print("Kotlin compiler options updated successfully.")
+          PY
 
       - name: Build debug APK
         shell: bash
