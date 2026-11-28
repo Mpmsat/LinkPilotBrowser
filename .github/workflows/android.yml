@@ -7,7 +7,7 @@ on:
     branches:
       - main
     paths:
-      - "**.zip"
+      - "MiliBrowser-Source-0.4.3-Test.zip"
       - ".github/workflows/android.yml"
 
 permissions:
@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   build:
-    name: Build Mili Browser APK 0.4.2
+    name: Build Mili Browser APK 0.4.3
     runs-on: ubuntu-24.04
 
     steps:
@@ -27,7 +27,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          ARCHIVE="$(find . -maxdepth 4 -type f -name "MiliBrowser-Source-0.4.2-Telegram-Complete.zip" -print -quit)"
+          ARCHIVE="$(find . -maxdepth 4 -type f -name "MiliBrowser-Source-0.4.3-Test.zip" -print -quit)"
 
           if [ -z "$ARCHIVE" ]; then
             echo "ERROR: Source ZIP not found."
@@ -92,214 +92,6 @@ jobs:
 
           echo "/opt/gradle-8.13/bin" >> "$GITHUB_PATH"
 
-      - name: Fix legacy Kotlin activity labels
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          FILE="app/src/main/java/com/linkpilot/browser/LegacyMainActivity.kt"
-
-          if [ -f "$FILE" ]; then
-            sed -i 's/this@MainActivity/this@LegacyMainActivity/g' "$FILE"
-          fi
-
-      - name: Fix Mili Shield GeckoView nullable callbacks
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          FILE="app/src/main/java/com/milichrome/browser/core/browser/MiliShieldController.kt"
-
-          if [ ! -f "$FILE" ]; then
-            echo "ERROR: MiliShieldController.kt not found."
-            exit 1
-          fi
-
-          cat > "$FILE" <<'KOTLIN'
-          package com.milichrome.browser.core.browser
-
-          import android.content.Context
-          import android.util.Log
-          import org.json.JSONObject
-          import org.mozilla.geckoview.GeckoRuntime
-          import org.mozilla.geckoview.WebExtension
-          import java.util.concurrent.atomic.AtomicBoolean
-
-          /** Installs Mili Shield and keeps a native messaging channel to its request filter. */
-          class MiliShieldController(context: Context, private val runtime: GeckoRuntime) {
-              private val installed = AtomicBoolean(false)
-              @Volatile private var extension: WebExtension? = null
-              @Volatile private var port: WebExtension.Port? = null
-
-              @Volatile
-              var lastStats: JSONObject = JSONObject()
-                  private set
-
-              private val pending = mutableListOf<JSONObject>()
-
-              fun install(onReady: ((Boolean, String?) -> Unit)? = null) {
-                  if (installed.get()) {
-                      onReady?.invoke(true, null)
-                      return
-                  }
-
-                  runtime.webExtensionController.ensureBuiltIn(
-                      "resource://android/assets/extensions/mili-shield/",
-                      "mili-shield@milichrome.local"
-                  ).accept({ ext ->
-                      val installedExtension = ext
-
-                      if (installedExtension == null) {
-                          val message = "GeckoView returned an empty Mili Shield extension."
-                          Log.e("MiliShield", message)
-                          onReady?.invoke(false, message)
-                      } else {
-                          runtime.webExtensionController
-                              .setAllowedInPrivateBrowsing(installedExtension, true)
-                              .accept({ privateReady ->
-                                  attachExtension(
-                                      privateReady ?: installedExtension,
-                                      onReady
-                                  )
-                              }, { privateError ->
-                                  Log.w(
-                                      "MiliShield",
-                                      "Private browsing permission could not be applied",
-                                      privateError
-                                  )
-                                  attachExtension(installedExtension, onReady)
-                              })
-                      }
-                  }, { error ->
-                      val message = error?.message
-                          ?: "Unknown error while installing Mili Shield."
-
-                      Log.e(
-                          "MiliShield",
-                          "Could not install built-in Shield: $message",
-                          error
-                      )
-
-                      onReady?.invoke(false, message)
-                  })
-              }
-
-              private fun attachExtension(
-                  ext: WebExtension,
-                  onReady: ((Boolean, String?) -> Unit)?
-              ) {
-                  extension = ext
-
-                  ext.setMessageDelegate(object : WebExtension.MessageDelegate {
-                      override fun onConnect(port: WebExtension.Port) {
-                          this@MiliShieldController.port = port
-
-                          port.setDelegate(object : WebExtension.PortDelegate {
-                              override fun onPortMessage(
-                                  message: Any,
-                                  port: WebExtension.Port
-                              ) {
-                                  if (
-                                      message is JSONObject &&
-                                      message.optString("type") == "mili:stats"
-                                  ) {
-                                      lastStats = message
-                                  }
-
-                                  Log.d("MiliShield", "Extension event: $message")
-                              }
-
-                              override fun onDisconnect(port: WebExtension.Port) {
-                                  if (this@MiliShieldController.port === port) {
-                                      this@MiliShieldController.port = null
-                                  }
-                              }
-                          })
-
-                          synchronized(pending) {
-                              pending.forEach { port.postMessage(it) }
-                              pending.clear()
-                          }
-                      }
-                  }, "mili")
-
-                  installed.set(true)
-                  onReady?.invoke(true, null)
-              }
-
-              fun requestStats() =
-                  sendMessage(JSONObject().put("type", "mili:get-stats"))
-
-              private fun sendMessage(payload: JSONObject) {
-                  val activePort = port
-
-                  if (activePort != null) {
-                      runCatching { activePort.postMessage(payload) }
-                  } else {
-                      synchronized(pending) {
-                          pending.add(payload)
-                      }
-                  }
-              }
-
-              fun pushSettings(
-                  global: JSONObject,
-                  site: JSONObject?,
-                  host: String?,
-                  blockedHosts: Set<String>,
-                  imageMode: Int,
-                  blockPopups: Boolean
-              ) {
-                  val payload = JSONObject().apply {
-                      put("type", "mili:configure")
-                      put("global", global)
-                      put("site", site ?: JSONObject())
-                      put("host", host ?: "")
-                      put("blockedHosts", org.json.JSONArray(blockedHosts.toList()))
-                      put("imageMode", imageMode)
-                      put("blockPopups", blockPopups)
-                  }
-
-                  sendMessage(payload)
-              }
-          }
-          KOTLIN
-
-          echo "MiliShieldController.kt updated."
-
-      - name: Fix Kotlin compiler options
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          FILE="app/build.gradle.kts"
-
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("app/build.gradle.kts")
-          content = path.read_text()
-
-          old = 'kotlinOptions { jvmTarget = "17" }'
-          new = '''kotlin {
-              compilerOptions {
-                  jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
-              }
-          }'''
-
-          count = content.count(old)
-
-          if count != 1:
-              raise SystemExit(
-                  f"Expected exactly one old Kotlin jvmTarget setting, found {count}"
-              )
-
-          content = content.replace(old, new, 1)
-          path.write_text(content)
-
-          print("Kotlin compiler options updated successfully.")
-          PY
-
       - name: Build debug APK
         shell: bash
         run: |
@@ -327,7 +119,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Mili-Browser-0.4.2-debug-APK
+          name: Mili-Browser-0.4.3-debug-APK
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
