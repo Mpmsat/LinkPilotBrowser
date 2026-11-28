@@ -7,65 +7,91 @@ on:
     branches:
       - main
     paths:
-      - "MiliBrowser-Source-0.4.3-Test.zip"
-      - ".github/workflows/android.yml"
+      - '**.zip'
+      - '.github/workflows/android.yml'
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Build Mili Browser APK 0.4.3
+    name: Build Mili Browser APK
     runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Locate and extract source archive
+      - name: Find and extract latest Android source ZIP
         shell: bash
         run: |
           set -euo pipefail
 
-          ARCHIVE="$(find . -maxdepth 4 -type f -name "MiliBrowser-Source-0.4.3-Test.zip" -print -quit)"
+          echo "Searching for source ZIP files..."
+
+          ARCHIVE=""
+
+          while IFS= read -r FILE; do
+            [ -n "$FILE" ] || continue
+
+            COMMIT_TIME="$(git log -1 --format=%ct -- "$FILE" 2>/dev/null || echo 0)"
+
+            if [ -z "$ARCHIVE" ] || [ "$COMMIT_TIME" -gt "$LATEST_TIME" ]; then
+              ARCHIVE="$FILE"
+              LATEST_TIME="$COMMIT_TIME"
+            fi
+          done < <(find . -type f -iname '*.zip' -not -path './.git/*')
 
           if [ -z "$ARCHIVE" ]; then
-            echo "ERROR: Source ZIP not found."
-            find . -maxdepth 4 -type f -iname "*.zip" -print
+            echo "ERROR: No ZIP source archive found."
             exit 1
           fi
 
-          echo "Using archive: $ARCHIVE"
+          echo "Selected source: $ARCHIVE"
 
           mkdir -p /tmp/mili-source
+
           unzip -q "$ARCHIVE" -d /tmp/mili-source
 
-          PROJECT_DIR="$(find /tmp/mili-source -type f -name "settings.gradle.kts" -print -quit | xargs -r dirname)"
+          PROJECT_FILE="$(find /tmp/mili-source -type f -name 'settings.gradle.kts' -print -quit)"
 
-          if [ -z "$PROJECT_DIR" ] || [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
-            echo "ERROR: Android project not found."
+          if [ -z "$PROJECT_FILE" ]; then
+            PROJECT_FILE="$(find /tmp/mili-source -type f -name 'settings.gradle' -print -quit)"
+          fi
+
+          if [ -z "$PROJECT_FILE" ]; then
+            echo "ERROR: Android Gradle project not found."
             exit 1
           fi
 
-          echo "Project directory: $PROJECT_DIR"
+          PROJECT_DIR="$(dirname "$PROJECT_FILE")"
 
-          find "$PROJECT_DIR" -mindepth 1 -maxdepth 1 ! -name ".github" -exec cp -a {} "$GITHUB_WORKSPACE"/ \;
+          if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ] && [ ! -f "$PROJECT_DIR/app/build.gradle" ]; then
+            echo "ERROR: Android app module not found."
+            exit 1
+          fi
 
-          test -f settings.gradle.kts
-          test -f app/build.gradle.kts
+          echo "Android project: $PROJECT_DIR"
+
+          find "$PROJECT_DIR" -mindepth 1 -maxdepth 1 ! -name '.github' -exec cp -a {} "$GITHUB_WORKSPACE"/ \;
+
+          test -f settings.gradle.kts -o -f settings.gradle
+          test -f app/build.gradle.kts -o -f app/build.gradle
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
           packages: platform-tools
 
-      - name: Install Android SDK components
+      - name: Install Android SDK
         shell: bash
         run: |
           set -euo pipefail
@@ -77,9 +103,11 @@ jobs:
           yes | sdkmanager --licenses >/dev/null || true
 
           sdkmanager \
-            "platform-tools" \
-            "platforms;android-36" \
-            "build-tools;36.0.0"
+            'platform-tools' \
+            'platforms;android-35' \
+            'platforms;android-36' \
+            'build-tools;35.0.0' \
+            'build-tools;36.0.0'
 
       - name: Install Gradle 8.13
         shell: bash
@@ -92,7 +120,7 @@ jobs:
 
           echo "/opt/gradle-8.13/bin" >> "$GITHUB_PATH"
 
-      - name: Build debug APK
+      - name: Build APK
         shell: bash
         run: |
           set -euo pipefail
@@ -104,7 +132,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          APK="$(find app/build/outputs/apk/debug -type f -name "*.apk" -print -quit)"
+          APK="$(find app/build/outputs/apk/debug -type f -name '*.apk' -print -quit)"
 
           if [ -z "$APK" ]; then
             echo "ERROR: APK was not generated."
@@ -119,7 +147,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Mili-Browser-0.4.3-debug-APK
+          name: Mili-Browser-APK
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
